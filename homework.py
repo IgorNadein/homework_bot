@@ -32,7 +32,7 @@ HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
 HOMEWORK_VERDICTS = {
     'approved': 'Работа проверена: ревьюеру всё понравилось. Ура!',
     'reviewing': 'Работа взята на проверку ревьюером.',
-    'rejected': 'Работа проверена: у ревьюера есть замечания.'
+    'rejected': 'Работа проверена: у ревьюера есть замечания.',
 }
 
 
@@ -48,15 +48,21 @@ def check_tokens():
 
 def get_api_answer(timestamp):
     """Делает запрос к API и возвращает ответ."""
-    payload = {'from_date': timestamp - RETRY_PERIOD}
+    payload = {'from_date': timestamp}
     try:
         response = requests.get(
             ENDPOINT,
             headers=HEADERS,
             params=payload
         )
-        response.raise_for_status()
+        if response.status_code != 200:
+            raise requests.exceptions.HTTPError
         return response.json()
+    except requests.exceptions.HTTPError as e:
+        logging.error(f"Ошибка запроса к API (HTTP Error): {e}")
+        logging.error(f"HTTP Status Code: {e.response.status_code}")
+        logging.error(f"API Response Text: {e.response.text}")
+        return None
     except requests.exceptions.RequestException as e:
         logging.error(
             f'Ошибка при запросе к API сервиса Практикум Домашка: {e}')
@@ -69,42 +75,38 @@ def check_response(response):
         return False
     if not isinstance(response, dict):
         logging.error('Ответ API не является словарем.')
+        raise TypeError
+    if 'homeworks' not in response or not isinstance(
+            response['homeworks'], list
+    ):
+        logging.error('Ключ "homeworks" отсутствует или не является списком.')
+        raise TypeError
+    if 'current_date' not in response:
+        logging.error('Ключ "current_date" отсутствует в ответе API.')
         return False
-    if 'homeworks' in response and 'current_date' in response:
-        if (
-            len(response['homeworks']) > 0
-            and 'lesson_name' in response['homeworks'][0]
-            and 'status' in response['homeworks'][0]
-        ) or len(response['homeworks']) == 0:
-            return True
-        else:
-            logging.error(
-                'Ключ "lesson_name" или "status" отсутствует в списке homework'
-            )
-    else:
-        logging.error(
-            'Ключ "homeworks" или "current_date" отсутствует в ответе API.'
-        )
-        return False
+    return True
 
 
 def parse_status(homework):
     """Извлекает статус домашней работы."""
-    homework = homework['homeworks']
-    if len(homework) > 0:
-        homework = homework[0]
-        homework_name = homework['lesson_name']
-        verdict = HOMEWORK_VERDICTS[homework['status']]
-        return f'Изменился статус проверки работы "{homework_name}". {verdict}'
+    if 'status' not in homework or homework['status'] not in HOMEWORK_VERDICTS:
+        raise KeyError(
+            f"Unknown or missing status: {homework.get('status', 'N/A')}")
+    verdict = HOMEWORK_VERDICTS[homework['status']]
+    if 'homework_name' in homework:
+        homework_name = homework['homework_name']
     else:
-        return None
+        homework_name = homework['lesson_name']
+
+    return f'Изменился статус проверки работы "{homework_name}". {verdict}'
 
 
 def send_message(bot, message):
     """Отправляет сообщение в Telegram-чат."""
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
-        logging.info(f"Сообщение отправлено в Telegram: {message}")
+
+        logging.debug(f"Сообщение отправлено в Telegram: {message}")
     except apihelper.ApiException as e:
         logging.error(f"Ошибка отправки сообщения в Telegram: {e}")
 
@@ -121,9 +123,13 @@ def main():
         try:
             response = get_api_answer(timestamp)
             if check_response(response):
-                message = parse_status(response)
-                if message:
-                    send_message(bot, message)
+                if len(response['homeworks']) > 0:
+                    message = parse_status(response['homeworks'][0])
+                    if message:
+                        send_message(bot, message)
+                else:
+                    logging.debug(
+                        'В ответе API получен пустой список домашних работ')
 
         except Exception as error:
             message = f'Сбой в работе программы: {error}'

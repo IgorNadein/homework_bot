@@ -30,7 +30,7 @@ HOMEWORK_VERDICTS = {
     'rejected': 'Работа проверена: у ревьюера есть замечания.',
 }
 
-sent_errors = {}
+sent_errors: dict[str, float] = {}
 
 
 class APIRequestError(Exception):
@@ -209,7 +209,10 @@ def main():
 
         except Exception as e:
             error_message = str(e)
-            if error_message not in sent_errors or time.time() - sent_errors[error_message] > DUPLICATE_DELAY:
+            if (
+                error_message not in sent_errors
+                or time.time() - sent_errors[error_message] > DUPLICATE_DELAY
+            ):
                 sent_errors[error_message] = time.time()
                 message = f'Сбой в работе программы: {error_message}'
                 send_message(bot, message)

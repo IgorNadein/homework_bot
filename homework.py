@@ -12,28 +12,29 @@ from telebot import TeleBot, apihelper
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
 
 PRACTICUM_TOKEN = os.getenv('PRACTICUM_TOKEN')
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-tokens = {
+TOKENS = (
     'PRACTICUM_TOKEN',
     'TELEGRAM_TOKEN',
     'TELEGRAM_CHAT_ID',
-}
+)
 
 RETRY_PERIOD = 600
 ENDPOINT = 'https://practicum.yandex.ru/api/user_api/homework_statuses/'
 HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
 
-STATUS_CHANGE_MSG = 'Изменился статус проверки работы "{}". {}'
-NO_DATA_AVAILABLES_CHANGE_MSG = ' Ключ {} отсутствует в данных {}.'
-API_REQUEST_ERROR_MESSAGE = 'Ошибка запроса к API: {}, Request parameters: {}.'
-API_RESPONSE_ERROR_MESSAGE = 'Ответ API: {}, ожидается: {}.'
+STATUS_CHANGE = 'Изменился статус проверки работы "{}". {}'
+NO_DATA_AVAILABLES_CHANGE = ' Ключ {} отсутствует в данных {}.'
+API_REQUEST_ERROR = 'Ошибка запроса к API: {}, Request parameters: {}.'
+API_RESPONSE_ERROR = 'Ответ API: {}, ожидается: {}.'
 ERROR_MESSAGE = 'Ошибка отправки сообщения в Telegram {}: {}'
 MESSAGE_SENT = 'Сообщение отправлено в Telegram: {}'
-NUL_LIST_ERROR_MESSAGE = 'В ответе API получен пустой список домашних работ'
-PROGRAM_ERROR_MESSAGE = 'Сбой в работе программы: {}'
+NUL_LIST_ERROR = 'В ответе API получен пустой список домашних работ или None'
+PROGRAM_ERROR = 'Сбой в работе программы: {}'
 
 HOMEWORK_VERDICTS = {
     'approved': 'Работа проверена: ревьюеру всё понравилось. Ура!',
@@ -46,45 +47,39 @@ class APIResponseError(Exception):
     """Custom exception for API response errors."""
 
 
-class TokenError(Exception):
-    """Custom exception for token validation errors."""
-
-
 def check_tokens():
     """Проверяет доступность переменных окружения."""
-    missings = [token for token in tokens if globals()[token] is None]
+    missings = [token for token in TOKENS if globals()[token] is None]
     if missings:
         message = (
             f'Отсутствуют необходимые переменные окружения: {missings}'
         )
         logging.critical(message)
-        raise TokenError(message)
+        raise KeyError(message)
 
 
 def get_api_answer(timestamp):
     """Делает запрос к API и возвращает ответ."""
-    rq_pars = dict(
+    requests_pars = dict(
         url=ENDPOINT,
         headers=HEADERS,
         params={'from_date': timestamp}
     )
     try:
-        response = requests.get(**rq_pars)
+        response = requests.get(**requests_pars)
     except requests.RequestException as e:
-        raise ConnectionError(API_REQUEST_ERROR_MESSAGE.format(e, **rq_pars))
+        raise ConnectionError(API_REQUEST_ERROR.format(e, **requests_pars))
 
     if response.status_code != HTTPStatus.OK.value:
-        raise ConnectionError(
-            API_REQUEST_ERROR_MESSAGE.format(ConnectionError, **rq_pars)
-            + f' HTTP Status Code: {response.status_code}'
+        raise requests.exceptions.HTTPError(
+            API_REQUEST_ERROR.format(response.status_code, **requests_pars)
         )
 
     data = response.json()
     for key in ('code', 'error'):
         if key in data:
-            error_details = f'В json() обнаружен ключ {key}: {data[key]}'
-            raise ConnectionError(
-                API_REQUEST_ERROR_MESSAGE.format(error_details, **rq_pars)
+            raise ValueError(
+                API_REQUEST_ERROR.format(key, data[key])
             )
 
     return data
@@ -93,22 +88,19 @@ def get_api_answer(timestamp):
 def check_response(response):
     """Проверяет ответ API на соответствие документации."""
     if not response:
-        raise APIResponseError(
-            API_RESPONSE_ERROR_MESSAGE.format('None или пуст', 'dict')
-        )
+        raise ConnectionError(NUL_LIST_ERROR)
     if not isinstance(response, dict):
         raise TypeError(
-            API_RESPONSE_ERROR_MESSAGE.format(type(response), 'dict')
+            API_RESPONSE_ERROR.format(type(response), type(dict()))
         )
     if 'homeworks' not in response:
         raise APIResponseError(
-            API_RESPONSE_ERROR_MESSAGE.format('None', 'homeworks')
+            API_RESPONSE_ERROR.format(type(None), 'homeworks')
         )
     if not isinstance(response['homeworks'], list):
-        response_type = type(response['homeworks'])
         raise TypeError(
-            API_RESPONSE_ERROR_MESSAGE.format(
-                f'"homeworks" type = {response_type}', 'list'
+            API_RESPONSE_ERROR.format(
+                type(response['homeworks']), type(list())
             )
         )
 
@@ -116,17 +108,17 @@ def check_response(response):
 def parse_status(homework):
     """Извлекает статус домашней работы."""
     if 'status' not in homework:
-        raise ValueError(
-            NO_DATA_AVAILABLES_CHANGE_MSG.format('status', 'homework')
+        raise AttributeError(
+            NO_DATA_AVAILABLES_CHANGE.format('status', 'homework')
         )
     status = homework['status']
     if status not in HOMEWORK_VERDICTS:
         raise ValueError(
-            NO_DATA_AVAILABLES_CHANGE_MSG.format(status, 'HOMEWORK_VERDICTS')
+            NO_DATA_AVAILABLES_CHANGE.format(status, 'HOMEWORK_VERDICTS')
         )
     if 'homework_name' in homework:
         name = homework['homework_name']
-    return STATUS_CHANGE_MSG.format(name, HOMEWORK_VERDICTS[status])
+    return STATUS_CHANGE.format(name, HOMEWORK_VERDICTS[status])
 
 
 def send_message(bot, message):
@@ -134,8 +126,10 @@ def send_message(bot, message):
     try:
         bot.send_message(TELEGRAM_CHAT_ID, message)
         logging.debug(MESSAGE_SENT.format(message))
+        return True
     except apihelper.ApiException as e:
         logging.error(ERROR_MESSAGE.format({message}, {e}))
+        return False
 
 
 def main():
@@ -152,16 +146,19 @@ def main():
             homeworks = response['homeworks']
             if homeworks:
                 message = parse_status(homeworks[0])
-                send_message(bot, message)
-                timestamp = int(response.get('current_date'))
+                telegram_send_success = send_message(bot, message)
+                if telegram_send_success:
+                    timestamp = int(
+                        response.get('current_date')
+                    )
             else:
-                logging.debug(NUL_LIST_ERROR_MESSAGE)
+                logging.debug(NUL_LIST_ERROR)
 
         except Exception as e:
             if str(e) != error_message:
-                error_message = str(e)
                 send_message(bot, message)
-            logging.error(PROGRAM_ERROR_MESSAGE.format(error_message))
+                error_message = str(e)
+            logging.error(PROGRAM_ERROR.format(error_message))
 
         finally:
             time.sleep(RETRY_PERIOD)
@@ -180,5 +177,4 @@ if __name__ == '__main__':
             logging.StreamHandler(stream=sys.stdout),
         ],
     )
-    logger = logging.getLogger(__name__)
     main()

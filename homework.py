@@ -55,7 +55,7 @@ def check_tokens():
             f'Отсутствуют необходимые переменные окружения: {missings}'
         )
         logging.critical(message)
-        raise KeyError(message)
+        raise OSError(message)
 
 
 def get_api_answer(timestamp):
@@ -79,7 +79,7 @@ def get_api_answer(timestamp):
     for key in ('code', 'error'):
         if key in data:
             raise ValueError(
-                API_REQUEST_ERROR.format(key, data[key])
+                API_REQUEST_ERROR.format((key, data[key]), **requests_pars)
             )
 
     return data
@@ -88,27 +88,26 @@ def get_api_answer(timestamp):
 def check_response(response):
     """Проверяет ответ API на соответствие документации."""
     if not response:
-        raise ConnectionError(NUL_LIST_ERROR)
+        raise ValueError(NUL_LIST_ERROR)
     if not isinstance(response, dict):
         raise TypeError(
-            API_RESPONSE_ERROR.format(type(response), type(dict()))
+            API_RESPONSE_ERROR.format(type(response), dict)
         )
     if 'homeworks' not in response:
-        raise APIResponseError(
+        raise KeyError(
             API_RESPONSE_ERROR.format(type(None), 'homeworks')
         )
-    if not isinstance(response['homeworks'], list):
+    homeworks = response['homeworks']
+    if not isinstance(homeworks, list):
         raise TypeError(
-            API_RESPONSE_ERROR.format(
-                type(response['homeworks']), type(list())
-            )
+            API_RESPONSE_ERROR.format(type(homeworks), list)
         )
 
 
 def parse_status(homework):
     """Извлекает статус домашней работы."""
     if 'status' not in homework:
-        raise AttributeError(
+        raise KeyError(
             NO_DATA_AVAILABLES_CHANGE.format('status', 'homework')
         )
     status = homework['status']
@@ -116,9 +115,13 @@ def parse_status(homework):
         raise ValueError(
             NO_DATA_AVAILABLES_CHANGE.format(status, 'HOMEWORK_VERDICTS')
         )
-    if 'homework_name' in homework:
-        name = homework['homework_name']
-    return STATUS_CHANGE.format(name, HOMEWORK_VERDICTS[status])
+    if 'homework_name' not in homework:
+        raise KeyError(NO_DATA_AVAILABLES_CHANGE.format(
+            'homework_name', 'homework')
+        )
+    return STATUS_CHANGE.format(
+        homework['homework_name'], HOMEWORK_VERDICTS[status]
+    )
 
 
 def send_message(bot, message):
@@ -128,7 +131,7 @@ def send_message(bot, message):
         logging.debug(MESSAGE_SENT.format(message))
         return True
     except apihelper.ApiException as e:
-        logging.error(ERROR_MESSAGE.format({message}, {e}))
+        logging.error(ERROR_MESSAGE.format(message, e))
         return False
 
 
@@ -137,28 +140,25 @@ def main():
     check_tokens()
     bot = TeleBot(token=TELEGRAM_TOKEN)
     timestamp = int(time.time())
-    error_message = None
+    last_message = None
 
     while True:
         try:
             response = get_api_answer(timestamp)
             check_response(response)
             homeworks = response['homeworks']
-            if homeworks:
-                message = parse_status(homeworks[0])
-                telegram_send_success = send_message(bot, message)
-                if telegram_send_success:
-                    timestamp = int(
-                        response.get('current_date')
-                    )
-            else:
+            if not homeworks:
                 logging.debug(NUL_LIST_ERROR)
-
+                continue
+            message = parse_status(homeworks[0])
+            if send_message(bot, message):
+                timestamp = response.get('current_date', timestamp)
         except Exception as e:
-            if str(e) != error_message:
-                send_message(bot, message)
-                error_message = str(e)
-            logging.error(PROGRAM_ERROR.format(error_message))
+            message = PROGRAM_ERROR.format(e)
+            if message != last_message:
+                if send_message(bot, message):
+                    last_message = message
+            logging.error(message)
 
         finally:
             time.sleep(RETRY_PERIOD)

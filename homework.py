@@ -30,11 +30,23 @@ HEADERS = {'Authorization': f'OAuth {PRACTICUM_TOKEN}'}
 STATUS_CHANGE = 'Изменился статус проверки работы "{}". {}'
 NO_DATA_AVAILABLES_CHANGE = ' Ключ {} отсутствует в данных {}.'
 API_REQUEST_ERROR = 'Ошибка запроса к API: {}, Request parameters: {}.'
+RESPONCE_STATUS_ERROR = (
+    'Код ответа не соответствует ожиданиям. Код: {},'
+    'Request parameters: {}.'
+)
+SERVER_FAILURES = (
+    'Отказ сервера. в .json() обнаружен ключ {}:{}.'
+    'Request parameters: {}.'
+)
+
 API_RESPONSE_ERROR = 'Ответ API: {}, ожидается: {}.'
 ERROR_MESSAGE = 'Ошибка отправки сообщения в Telegram {}: {}'
 MESSAGE_SENT = 'Сообщение отправлено в Telegram: {}'
 NUL_LIST_ERROR = 'В ответе API получен пустой список домашних работ или None'
 PROGRAM_ERROR = 'Сбой в работе программы: {}'
+HOMEWORK_STATUS_ERROR = 'Некорректный статус домашки: {}'
+HOMEWORKS_NOT_RESPONSE = '{} отсутствует в ответе API.'
+
 
 HOMEWORK_VERDICTS = {
     'approved': 'Работа проверена: ревьюеру всё понравилось. Ура!',
@@ -43,8 +55,8 @@ HOMEWORK_VERDICTS = {
 }
 
 
-class APIResponseError(Exception):
-    """Custom exception for API response errors."""
+class APIError(Exception):
+    """Исключение для ошиок сервера."""
 
 
 def check_tokens():
@@ -71,15 +83,19 @@ def get_api_answer(timestamp):
         raise ConnectionError(API_REQUEST_ERROR.format(e, **requests_pars))
 
     if response.status_code != HTTPStatus.OK.value:
-        raise requests.exceptions.HTTPError(
-            API_REQUEST_ERROR.format(response.status_code, **requests_pars)
+        raise APIError(
+            RESPONCE_STATUS_ERROR.format(response.status_code, **requests_pars)
         )
 
     data = response.json()
     for key in ('code', 'error'):
         if key in data:
-            raise ValueError(
-                API_REQUEST_ERROR.format((key, data[key]), **requests_pars)
+            raise Exception(
+                SERVER_FAILURES.format(
+                    key,
+                    data[key],
+                    **requests_pars
+                )
             )
 
     return data
@@ -95,7 +111,7 @@ def check_response(response):
         )
     if 'homeworks' not in response:
         raise KeyError(
-            API_RESPONSE_ERROR.format(type(None), 'homeworks')
+            HOMEWORKS_NOT_RESPONSE.format('homeworks')
         )
     homeworks = response['homeworks']
     if not isinstance(homeworks, list):
@@ -112,9 +128,7 @@ def parse_status(homework):
         )
     status = homework['status']
     if status not in HOMEWORK_VERDICTS:
-        raise ValueError(
-            NO_DATA_AVAILABLES_CHANGE.format(status, 'HOMEWORK_VERDICTS')
-        )
+        raise ValueError(HOMEWORK_STATUS_ERROR.format(status))
     if 'homework_name' not in homework:
         raise KeyError(NO_DATA_AVAILABLES_CHANGE.format(
             'homework_name', 'homework')
@@ -155,9 +169,8 @@ def main():
                 timestamp = response.get('current_date', timestamp)
         except Exception as e:
             message = PROGRAM_ERROR.format(e)
-            if message != last_message:
-                if send_message(bot, message):
-                    last_message = message
+            if message != last_message and send_message(bot, message):
+                last_message = message
             logging.error(message)
 
         finally:
